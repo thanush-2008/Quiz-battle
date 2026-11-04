@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QuizBattle — Real-Time Multiplayer Quiz</title>
+  <meta name="description" content="Create a quiz room, share the code and challenge your friends in a real-time multiplayer quiz.">
+  <meta name="theme-color" content="#ffe600">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23ffe600' stroke='%23000' stroke-width='3'/%3E%3Cpath d='M18 4 8 18h7l-1 10 10-14h-7z' fill='%23000'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <!-- Shown when the connection to the server is lost -->
+  <div id="connection-banner" class="connection-banner" role="status" hidden>
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="connection-text">Connecting to the server…</span>
+  </div>
+
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="QuizBattle home">
+      <svg class="brand-logo" viewBox="0 0 40 40" width="40" height="40" aria-hidden="true" focusable="false">
+        <rect width="40" height="40" fill="#ffffff"/>
+        <path d="M22.5 6 11 22.5h8L17.5 34 29 17.5h-8z" fill="#000000"/>
+      </svg>
+      <span class="brand-name">Quiz<span>Battle</span></span>
+    </a>
+  </header>
+
+  <main id="main" class="container">
+
+    <!-- ===================================================== 1. HOMEPAGE -->
+    <section id="view-home" class="view" aria-labelledby="home-title">
+      <div class="hero">
+        <p class="eyebrow">Real-time multiplayer trivia</p>
+        <h1 id="home-title" class="view-title" tabindex="-1">Challenge Your <span class="gradient-text">Friends' Knowledge.</span></h1>
+        <p class="lead">Spin up a quiz room in seconds, share the code and race your friends to the top of the leaderboard — on any phone, tablet or computer.</p>
+      </div>
+
+      <div class="card home-card">
+        <div class="field">
+          <label for="player-name">Your name</label>
+          <input id="player-name" type="text" maxlength="20" autocomplete="nickname" spellcheck="false"
+                 placeholder="e.g. QuizWizard" aria-describedby="name-hint">
+          <p id="name-hint" class="hint">1–20 characters. Letters, numbers, spaces and . _ ' - are allowed.</p>
+        </div>
+
+        <div class="home-actions">
+          <div class="action-block">
+            <h2>Host a game</h2>
+            <p class="hint">Create a room and invite up to 19 friends with a 6-character code.</p>
+            <button id="btn-create" class="btn btn-primary btn-block" type="button">Create Room</button>
+          </div>
+
+          <div class="divider" aria-hidden="true"><span>or</span></div>
+
+          <form id="join-form" class="action-block" novalidate>
+            <h2>Join a game</h2>
+            <label for="room-code-input" class="hint">Enter the room code from your host</label>
+            <input id="room-code-input" class="code-input" type="text" maxlength="7" autocapitalize="characters"
+                   autocomplete="off" spellcheck="false" placeholder="ABC123">
+            <button id="btn-join" class="btn btn-secondary btn-block" type="submit">Join Room</button>
+          </form>
+        </div>
+
+        <p id="home-error" class="form-error" role="alert"></p>
+      </div>
+
+      <section class="how-to" aria-labelledby="how-title">
+        <h2 id="how-title" class="section-title">How to Play</h2>
+        <ol class="steps">
+          <li class="step card">
+            <span class="step-num" aria-hidden="true">1</span>
+            <h3>Pick a name</h3>
+            <p>Type the name your friends will see on the leaderboard.</p>
+          </li>
+          <li class="step card">
+            <span class="step-num" aria-hidden="true">2</span>
+            <h3>Create or join</h3>
+            <p>Hosts create a room and share the code. Everyone else enters it to join the lobby.</p>
+          </li>
+          <li class="step card">
+            <span class="step-num" aria-hidden="true">3</span>
+            <h3>Answer fast</h3>
+            <p>Everyone sees the same question at once. You have 15 seconds — 10 points per correct answer.</p>
+          </li>
+          <li class="step card">
+            <span class="step-num" aria-hidden="true">4</span>
+            <h3>Take the trophy</h3>
+            <p>Watch the live leaderboard. The highest score after the final question wins!</p>
+          </li>
+        </ol>
+      </section>
+    </section>
+
+    <!-- ===================================================== 2. WAITING ROOM -->
+    <section id="view-lobby" class="view" hidden aria-labelledby="lobby-title">
+      <h1 id="lobby-title" class="view-title" tabindex="-1">Waiting Room</h1>
+      <p class="lead">Share the code below. The quiz begins when the host presses Start.</p>
+
+      <div class="lobby-grid">
+        <div class="card code-card">
+          <p class="label">Room code</p>
+          <p id="lobby-code" class="room-code" aria-live="polite"></p>
+          <div class="btn-row">
+            <button id="btn-copy-code" class="btn btn-ghost" type="button">Copy code</button>
+            <button id="btn-copy-link" class="btn btn-ghost" type="button">Copy invite link</button>
+          </div>
+          <p class="hint">Friends can also open the invite link on their phone to join instantly.</p>
+        </div>
+
+        <div class="card players-card">
+          <div class="card-head">
+            <h2>Players</h2>
+            <span id="player-count" class="pill" aria-label="Number of players">0 / 20</span>
+          </div>
+          <ul id="lobby-players" class="player-list" aria-live="polite"></ul>
+        </div>
+      </div>
+
+      <div class="lobby-actions">
+        <button id="btn-start" class="btn btn-primary btn-lg" type="button" hidden>Start Quiz</button>
+        <p id="lobby-wait" class="hint" aria-live="polite"></p>
+        <button id="btn-leave-lobby" class="btn btn-ghost" type="button">Leave room</button>
+      </div>
+    </section>
+
+    <!-- ===================================================== 3. QUIZ -->
+    <section id="view-quiz" class="view" hidden aria-labelledby="quiz-progress">
+      <div class="quiz-layout">
+        <div class="card question-card">
+          <div class="question-meta">
+            <h1 id="quiz-progress" class="progress-label" tabindex="-1">Question <span id="q-number">1</span> of <span id="q-total">5</span></h1>
+            <span id="answered-count" class="pill" aria-live="polite">0 / 0 answered</span>
+          </div>
+
+          <div id="timer" class="timer" role="timer" aria-label="Time remaining">
+            <div class="timer-track"><div id="timer-fill" class="timer-fill"></div></div>
+            <span id="timer-text" class="timer-text">15</span>
+          </div>
+
+          <p id="question-text" class="question-text"></p>
+          <div id="options" class="options" role="group" aria-labelledby="question-text"></div>
+
+          <p id="quiz-status" class="quiz-status" aria-live="polite"></p>
+          <p id="quiz-next" class="quiz-next"></p>
+        </div>
+
+        <aside class="card leaderboard-card" aria-labelledby="lb-title">
+          <h2 id="lb-title">Live leaderboard</h2>
+          <ol id="live-leaderboard" class="leaderboard"></ol>
+          <button id="btn-leave-quiz" class="btn btn-ghost btn-sm" type="button">Leave game</button>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ===================================================== 4. RESULTS -->
+    <section id="view-results" class="view" hidden aria-labelledby="results-title">
+      <div class="results-hero">
+        <div id="trophy-hero" class="trophy" role="img" aria-label="Trophy" hidden>🏆</div>
+        <h1 id="results-title" class="view-title" tabindex="-1">Final Results</h1>
+        <p id="results-subtitle" class="lead" aria-live="polite"></p>
+        <p id="results-me" class="lead lead-small"></p>
+      </div>
+
+      <div class="card results-card">
+        <ol id="final-leaderboard" class="leaderboard leaderboard-final"></ol>
+      </div>
+
+      <div class="results-actions">
+        <button id="btn-play-again" class="btn btn-primary btn-lg" type="button">Play Again</button>
+        <button id="btn-leave-results" class="btn btn-ghost" type="button">Leave room</button>
+      </div>
+      <p id="results-wait" class="hint centered" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>QuizBattle · Built with Node.js, Express, Socket.IO &amp; SQLite</p>
+  </footer>
+
+  <!-- Pop-up messages (errors, success notices) -->
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <!-- Socket.IO client: served automatically by the Socket.IO server on the same origin -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
