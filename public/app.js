@@ -47,6 +47,19 @@
     signinStatus: $('signin-status'),
     signinError: $('signin-error'),
     signinInvite: $('signin-invite'),
+    tabLogin: $('tab-login'),
+    tabSignup: $('tab-signup'),
+    loginForm: $('login-form'),
+    signupForm: $('signup-form'),
+    loginId: $('login-id'),
+    loginPassword: $('login-password'),
+    signupUsername: $('signup-username'),
+    signupEmail: $('signup-email'),
+    signupPassword: $('signup-password'),
+    signupConfirm: $('signup-confirm'),
+    showPasswords: $('show-passwords'),
+    btnLogin: $('btn-login'),
+    btnSignup: $('btn-signup'),
     devLogin: $('dev-login'),
     devName: $('dev-name'),
     // profile dialog
@@ -784,7 +797,7 @@
     el.profileBtn.hidden = state.view === 'signin';
 
     paintAvatar(el.dlgAvatar, user.displayName, user.picture);
-    el.dlgEmail.textContent = user.email;
+    el.dlgEmail.textContent = user.username ? `${user.email} · @${user.username}` : user.email;
     el.btnPhotoRemove.hidden = !user.hasCustomPicture;
     const stats = user.stats || {};
     el.statGames.textContent = String(stats.games || 0);
@@ -850,12 +863,12 @@
       el.googleButton.replaceChildren();
       window.google.accounts.id.renderButton(el.googleButton, {
         theme: 'filled_black',
-        size: 'large',
-        text: 'signin_with',
+        size: 'medium', // compact: Google's 32 px-high button (the logo scales with it)
+        text: 'continue_with',
         shape: 'rectangular',
-        width: Math.min(320, Math.max(200, el.googleButton.clientWidth || 300)),
+        width: Math.min(260, Math.max(200, el.googleButton.clientWidth || 260)),
       });
-      el.signinStatus.textContent = 'Pick your Google account to continue.';
+      el.signinStatus.textContent = '';
     } catch (err) {
       el.signinStatus.textContent = 'Could not load Google sign-in. Disable ad blockers for this site and refresh.';
     }
@@ -1032,6 +1045,69 @@
     location.assign(location.pathname); // fresh start on the sign-in screen
   }
 
+  // ---- Email + password: tabs, sign up, sign in ----------------------------------
+  function setAuthTab(which) {
+    const signup = which === 'signup';
+    el.loginForm.hidden = signup;
+    el.signupForm.hidden = !signup;
+    el.tabLogin.classList.toggle('is-active', !signup);
+    el.tabSignup.classList.toggle('is-active', signup);
+    el.tabLogin.setAttribute('aria-selected', String(!signup));
+    el.tabSignup.setAttribute('aria-selected', String(signup));
+    el.tabLogin.tabIndex = signup ? -1 : 0;
+    el.tabSignup.tabIndex = signup ? 0 : -1;
+    el.signinError.textContent = '';
+  }
+
+  async function onLogin(event) {
+    event.preventDefault();
+    el.signinError.textContent = '';
+    const identifier = el.loginId.value.trim();
+    const password = el.loginPassword.value;
+    if (!identifier || !password) {
+      el.signinError.textContent = 'Enter your email (or username) and your password.';
+      return;
+    }
+    setBusy(el.btnLogin, true);
+    const result = await api('/auth/login', { method: 'POST', json: { identifier, password } });
+    setBusy(el.btnLogin, false);
+    if (!result.ok) {
+      el.signinError.textContent = result.data.error || 'Sign-in failed. Please try again.';
+      el.loginPassword.select();
+      return;
+    }
+    el.loginPassword.value = '';
+    signedIn(result.data.user);
+  }
+
+  async function onSignup(event) {
+    event.preventDefault();
+    el.signinError.textContent = '';
+    const username = el.signupUsername.value.trim();
+    const email = el.signupEmail.value.trim();
+    const password = el.signupPassword.value;
+    let problem = '';
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(username)) problem = 'Usernames are 3–20 characters: letters, numbers and underscores only.';
+    else if (!/^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/.test(email)) problem = 'Please enter a valid email address.';
+    else if (password.length < 8) problem = 'Your password must be at least 8 characters.';
+    else if (password !== el.signupConfirm.value) problem = 'The two passwords do not match.';
+    if (problem) {
+      el.signinError.textContent = problem;
+      return;
+    }
+    setBusy(el.btnSignup, true);
+    const result = await api('/auth/signup', { method: 'POST', json: { username, email, password } });
+    setBusy(el.btnSignup, false);
+    if (!result.ok) {
+      el.signinError.textContent = result.data.error || 'Could not create the account. Please try again.';
+      return;
+    }
+    el.signupPassword.value = '';
+    el.signupConfirm.value = '';
+    signedIn(result.data.user);
+    toast(`Welcome, ${result.data.user.displayName}! Your account is ready.`, 'success', 3500);
+  }
+
   async function onDevLogin(event) {
     event.preventDefault();
     el.signinError.textContent = '';
@@ -1055,6 +1131,23 @@
   el.btnPhotoRemove.addEventListener('click', onRemovePhoto);
   el.btnSignOut.addEventListener('click', onSignOut);
   el.devLogin.addEventListener('submit', onDevLogin);
+  el.loginForm.addEventListener('submit', onLogin);
+  el.signupForm.addEventListener('submit', onSignup);
+  el.tabLogin.addEventListener('click', () => setAuthTab('login'));
+  el.tabSignup.addEventListener('click', () => setAuthTab('signup'));
+  for (const tab of [el.tabLogin, el.tabSignup]) {
+    tab.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        const next = tab === el.tabLogin ? el.tabSignup : el.tabLogin;
+        setAuthTab(next === el.tabSignup ? 'signup' : 'login');
+        next.focus();
+      }
+    });
+  }
+  el.showPasswords.addEventListener('change', () => {
+    const type = el.showPasswords.checked ? 'text' : 'password';
+    for (const input of [el.loginPassword, el.signupPassword, el.signupConfirm]) input.type = type;
+  });
   el.pfBio.addEventListener('input', () => {
     el.pfBioCount.textContent = String([...el.pfBio.value].length);
   });

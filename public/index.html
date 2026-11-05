@@ -42,15 +42,60 @@
       <div class="hero">
         <p class="eyebrow">Real-time multiplayer trivia</p>
         <h1 id="signin-title" class="view-title" tabindex="-1">Sign in <span class="gradient-text">to play.</span></h1>
-        <p class="lead">Use your Google account to get a profile, a photo, your own stats and a name your friends recognise.</p>
+        <p class="lead">Create an account with your email, or continue with Google. You get a profile, a photo and your own stats.</p>
       </div>
 
       <div class="card signin-card">
         <p id="signin-invite" class="invite-note" hidden></p>
-        <h2>Continue with Google</h2>
-        <div id="google-button" class="google-button" aria-live="polite"></div>
-        <p id="signin-status" class="hint">Loading Google sign-in…</p>
+
+        <div class="auth-tabs" role="tablist" aria-label="Account">
+          <button id="tab-login" class="auth-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="login-form">Sign in</button>
+          <button id="tab-signup" class="auth-tab" type="button" role="tab" aria-selected="false" aria-controls="signup-form" tabindex="-1">Create account</button>
+        </div>
+
+        <!-- Already have an account -->
+        <form id="login-form" class="auth-form" role="tabpanel" aria-labelledby="tab-login" novalidate>
+          <div class="field">
+            <label for="login-id">Email or username</label>
+            <input id="login-id" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="254">
+          </div>
+          <div class="field">
+            <label for="login-password">Password</label>
+            <input id="login-password" type="password" autocomplete="current-password" maxlength="128">
+          </div>
+          <button id="btn-login" class="btn btn-primary btn-block" type="submit">Sign in</button>
+        </form>
+
+        <!-- New account -->
+        <form id="signup-form" class="auth-form" role="tabpanel" aria-labelledby="tab-signup" hidden novalidate>
+          <div class="field">
+            <label for="signup-username">Username</label>
+            <input id="signup-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="20">
+            <p class="hint">3–20 characters: letters, numbers and underscores. This is also your first display name.</p>
+          </div>
+          <div class="field">
+            <label for="signup-email">Email</label>
+            <input id="signup-email" type="email" autocomplete="email" autocapitalize="none" spellcheck="false" maxlength="254">
+          </div>
+          <div class="field">
+            <label for="signup-password">Password</label>
+            <input id="signup-password" type="password" autocomplete="new-password" maxlength="128">
+            <p class="hint">At least 8 characters.</p>
+          </div>
+          <div class="field">
+            <label for="signup-confirm">Confirm password</label>
+            <input id="signup-confirm" type="password" autocomplete="new-password" maxlength="128">
+          </div>
+          <button id="btn-signup" class="btn btn-primary btn-block" type="submit">Create account</button>
+        </form>
+
+        <label class="check"><input id="show-passwords" type="checkbox"> Show passwords</label>
         <p id="signin-error" class="form-error" role="alert"></p>
+
+        <div class="or-line" aria-hidden="true"><span>or</span></div>
+
+        <div id="google-button" class="google-button" aria-live="polite"></div>
+        <p id="signin-status" class="hint centered">Loading Google sign-in…</p>
 
         <!-- Local testing only: the server shows this form only when DEV_LOGIN=true and NODE_ENV is not production -->
         <form id="dev-login" class="dev-login" hidden novalidate>
@@ -59,7 +104,7 @@
           <input id="dev-name" type="text" maxlength="20" autocomplete="off" placeholder="e.g. Alice">
           <button class="btn btn-ghost btn-block" type="submit">Test sign-in</button>
         </form>
-        <p class="hint">We only use your name, email and photo from Google to build your QuizBattle profile. We never post anything.</p>
+        <p class="hint">We only use your name, email and photo to build your QuizBattle profile. We never post anything.</p>
       </div>
     </section>
 

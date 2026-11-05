@@ -11,6 +11,14 @@
  *      server always knows who is calling. The browser never tells the server
  *      "I am Alice" — the server reads it from the verified session.
  *
+ * Email + password accounts (sign up / sign in) work alongside Google:
+ *   - Passwords are hashed with scrypt (built into Node) and a random salt per person.
+ *     The password itself is never stored or logged.
+ *   - Wrong passwords are throttled per IP + account, and unknown accounts take the
+ *     same time to answer as real ones (so attackers cannot probe which exist).
+ *   - Emails typed at sign-up are NOT verified (there is no email sending yet). If the real owner
+ *     later signs in with Google, the password is removed from that account and Google takes over.
+ *
  * Security notes:
  *   - The session cookie is HttpOnly (JavaScript cannot read it), SameSite=Lax
  *     (other websites cannot make it ride along on POST requests) and Secure
@@ -46,6 +54,47 @@ const MAX_AVATAR_BYTES = 200 * 1024;
 // Same rule as the room names in server.js (letters, numbers, space and . _ ' -)
 const NAME_PATTERN = /^[\p{L}\p{M}\p{N} ._'-]+$/u;
 const NAME_ERROR = `Display names must be 1–${LIMITS.displayName} characters: letters, numbers, spaces and . _ ' - only.`;
+
+// ---- email + password accounts ------------------------------------------------
+const USERNAME_PATTERN = /^[A-Za-z0-9_]{3,20}$/;
+const USERNAME_ERROR = 'Usernames are 3–20 characters: letters, numbers and underscores only.';
+const RESERVED_USERNAMES = new Set(['admin', 'administrator', 'root', 'system', 'support', 'moderator', 'quizbattle', 'null', 'undefined']);
+const EMAIL_PATTERN = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/;
+const PASSWORD_MIN = 8;
+const PASSWORD_MAX = 128;
+// scrypt settings recommended by OWASP (32 MiB of memory, about a quarter of a second per check).
+const SCRYPT = { N: 1 << 15, r: 8, p: 3, keylen: 32, maxmem: 128 * 1024 * 1024 };
+
+function scryptAsync(password, salt, params) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, params.keylen, { N: params.N, r: params.r, p: params.p, maxmem: SCRYPT.maxmem }, (err, key) =>
+      err ? reject(err) : resolve(key)
+    );
+  });
+}
+
+/** Returns "scrypt$N$r$p$salt$hash" (everything needed to check the password later). */
+async function hashPassword(password) {
+  const salt = crypto.randomBytes(16);
+  const key = await scryptAsync(password, salt, SCRYPT);
+  return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString('base64')}$${key.toString('base64')}`;
+}
+
+async function verifyPassword(password, stored) {
+  try {
+    const [scheme, N, r, p, saltB64, hashB64] = String(stored).split('$');
+    if (scheme !== 'scrypt') return false;
+    const expected = Buffer.from(hashB64, 'base64');
+    const key = await scryptAsync(password, Buffer.from(saltB64, 'base64'), { N: Number(N), r: Number(r), p: Number(p), keylen: expected.length });
+    return key.length === expected.length && crypto.timingSafeEqual(key, expected);
+  } catch (err) {
+    return false;
+  }
+}
+
+// A throw-away hash used to spend the same time when the account does not exist.
+let dummyHashPromise = null;
+const dummyHash = () => (dummyHashPromise = dummyHashPromise || hashPassword(crypto.randomBytes(12).toString('hex')));
 
 let googleClient = null;
 if (GOOGLE_CLIENT_ID) {
@@ -110,6 +159,7 @@ function toClientUser(user, { withStats = false } = {}) {
     id: user.public_id,
     email: user.email,
     displayName: user.display_name,
+    username: user.username || null,
     bio: user.bio,
     location: user.location,
     favoriteTopic: user.favorite_topic,
@@ -193,6 +243,30 @@ function rateLimit(max, windowMs) {
 function createAuth(hooks) {
   const router = express.Router();
   const limiter = rateLimit(60, 60 * 1000);
+  const loginLimiter = rateLimit(30, 10 * 60 * 1000); // per IP
+  const signupLimiter = rateLimit(30, 60 * 60 * 1000); // per IP (friends may share one Wi-Fi)
+
+  // Wrong-password tracking: 5 mistakes for the same IP + account = 15 minute pause.
+  const failures = new Map();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of failures) if (now > v.until && now - v.last > 15 * 60 * 1000) failures.delete(k);
+  }, 5 * 60 * 1000).unref();
+  const failureWaitSeconds = (key) => {
+    const entry = failures.get(key);
+    return entry && entry.until > Date.now() ? (entry.until - Date.now()) / 1000 : 0;
+  };
+  const recordFailure = (key) => {
+    const entry = failures.get(key) || { count: 0, until: 0, last: 0 };
+    entry.count += 1;
+    entry.last = Date.now();
+    if (entry.count >= 5) {
+      entry.until = Date.now() + 15 * 60 * 1000;
+      entry.count = 0;
+    }
+    failures.set(key, entry);
+  };
+  const clearFailures = (key) => failures.delete(key);
   const json = express.json({ limit: '10kb' });
 
   /** Middleware: attaches req.user or answers 401. */
@@ -252,6 +326,74 @@ function createAuth(hooks) {
     if (!name) return res.status(400).json({ error: NAME_ERROR });
     const email = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '.')}@dev.local`;
     const user = database.upsertUser({ sub: `dev:${email}`, email, name, picture: null });
+    startSession(req, res, user);
+    return res.json({ user: toClientUser(user, { withStats: true }) });
+  });
+
+  // ---- email + password: create account -------------------------------------------
+  router.post('/auth/signup', signupLimiter, json, async (req, res) => {
+    const body = req.body || {};
+    const username = typeof body.username === 'string' ? body.username.trim() : '';
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+
+    if (!USERNAME_PATTERN.test(username) || RESERVED_USERNAMES.has(username.toLowerCase())) {
+      return res.status(400).json({ error: USERNAME_ERROR });
+    }
+    if (email.length > 254 || !EMAIL_PATTERN.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+    if (password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) {
+      return res.status(400).json({ error: `Passwords must be ${PASSWORD_MIN}–${PASSWORD_MAX} characters.` });
+    }
+    const lowerPassword = password.toLowerCase();
+    if (lowerPassword === username.toLowerCase() || lowerPassword === email || lowerPassword === email.split('@')[0]) {
+      return res.status(400).json({ error: 'Your password must not be the same as your username or email.' });
+    }
+    try {
+      const passwordHash = await hashPassword(password);
+      // Everything below is synchronous, so two sign-ups can never slip in between the check and the insert.
+      if (database.getUserByUsername(username)) return res.status(409).json({ error: 'That username is already taken.' });
+      if (database.getUserByEmail(email)) {
+        return res.status(409).json({ error: 'That email is already registered. Sign in instead, or use Google.' });
+      }
+      const user = database.createPasswordUser({ username, email, passwordHash });
+      startSession(req, res, user);
+      return res.status(201).json({ user: toClientUser(user, { withStats: true }) });
+    } catch (err) {
+      console.error('[auth] sign-up failed:', err);
+      return res.status(500).json({ error: 'Could not create the account. Please try again.' });
+    }
+  });
+
+  // ---- email + password: sign in ---------------------------------------------------
+  router.post('/auth/login', loginLimiter, json, async (req, res) => {
+    const body = req.body || {};
+    const identifier = typeof body.identifier === 'string' ? body.identifier.trim().toLowerCase() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (!identifier || identifier.length > 254 || !password || password.length > PASSWORD_MAX) {
+      return res.status(400).json({ error: 'Enter your email (or username) and your password.' });
+    }
+
+    const key = `${req.ip}|${identifier}`;
+    const wait = failureWaitSeconds(key);
+    if (wait > 0) {
+      return res.status(429).json({ error: `Too many wrong attempts. Try again in ${Math.ceil(wait / 60)} minute(s).` });
+    }
+
+    const user = identifier.includes('@') ? database.getUserByEmail(identifier) : database.getUserByUsername(identifier);
+    const storedHash = user ? database.getPasswordHash(user.id) : null;
+    // Always do one hash comparison, even for unknown accounts, so the timing reveals nothing.
+    const valid = await verifyPassword(password, storedHash || (await dummyHash()));
+
+    if (user && !storedHash) {
+      return res.status(401).json({ error: 'This account uses Google. Please use the "Sign in with Google" button.' });
+    }
+    if (!user || !valid) {
+      recordFailure(key);
+      return res.status(401).json({ error: 'Incorrect email/username or password.' });
+    }
+    clearFailures(key);
     startSession(req, res, user);
     return res.json({ user: toClientUser(user, { withStats: true }) });
   });

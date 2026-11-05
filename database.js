@@ -109,6 +109,14 @@ if (!db.prepare('PRAGMA table_info(game_results)').all().some((c) => c.name === 
 }
 db.exec('CREATE INDEX IF NOT EXISTS idx_results_user ON game_results(user_id)');
 
+// Email + password accounts (added after Google sign-in). Older databases need these columns.
+const userColumns = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+if (!userColumns.includes('username')) db.exec('ALTER TABLE users ADD COLUMN username TEXT');
+if (!userColumns.includes('password_hash')) db.exec('ALTER TABLE users ADD COLUMN password_hash TEXT');
+// Usernames are unique ignoring upper/lower case. NULL (Google-only users) is allowed many times.
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCASE)');
+
 // ---------------------------------------------------------------------------
 // 3. Question bank (questions-bank.js)
 //    Every start-up inserts any bank questions that are not in the database
@@ -227,7 +235,7 @@ function getRecentGames(limit = 10) {
 // 5. Users, sessions and profiles (used by auth.js)
 // ---------------------------------------------------------------------------
 // We never SELECT the photo BLOB together with the other columns (it is large).
-const USER_COLUMNS = `id, public_id, google_sub, email, display_name, bio, location,
+const USER_COLUMNS = `id, public_id, google_sub, email, display_name, username, bio, location,
   favorite_topic, google_picture, avatar_updated_at, created_at, last_login_at`;
 
 const q = {
@@ -237,6 +245,24 @@ const q = {
   insertUser: db.prepare(
     `INSERT INTO users (public_id, google_sub, email, display_name, google_picture)
      VALUES (?, ?, ?, ?, ?)`
+  ),
+  userByUsername: db.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE username = ? COLLATE NOCASE`),
+  // For sign-in by email: prefer the account that actually has a password.
+  userByEmail: db.prepare(
+    `SELECT ${USER_COLUMNS} FROM users WHERE email = ? COLLATE NOCASE
+      ORDER BY (password_hash IS NOT NULL) DESC, id LIMIT 1`
+  ),
+  passwordHash: db.prepare('SELECT password_hash FROM users WHERE id = ?'),
+  insertPasswordUser: db.prepare(
+    `INSERT INTO users (public_id, google_sub, email, display_name, username, password_hash)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ),
+  // A person who signed up with a password later proves the same email through Google:
+  // attach the Google identity and DELETE the password, so nobody who merely typed
+  // someone else's email at sign-up can keep access.
+  linkGoogle: db.prepare(
+    `UPDATE users SET google_sub = ?, google_picture = COALESCE(?, google_picture), password_hash = NULL,
+            last_login_at = datetime('now') WHERE id = ?`
   ),
   touchUser: db.prepare(
     `UPDATE users SET email = ?, google_picture = ?, last_login_at = datetime('now') WHERE id = ?`
@@ -276,10 +302,27 @@ function upsertUser({ sub, email, name, picture }) {
     q.touchUser.run(email, picture || null, existing.id);
     return q.userById.get(existing.id);
   }
+  // Same email already registered with a password? Google has verified the email, so link them.
+  const byEmail = q.userByEmail.get(email);
+  if (byEmail && byEmail.google_sub.startsWith('local:')) {
+    q.linkGoogle.run(sub, picture || null, byEmail.id);
+    q.deleteUserSessions.run(byEmail.id); // sign out anything that used the old password
+    return q.userById.get(byEmail.id);
+  }
   const publicId = crypto.randomBytes(8).toString('hex');
   const info = q.insertUser.run(publicId, sub, email, name, picture || null);
   return q.userById.get(Number(info.lastInsertRowid));
 }
+
+/** Creates an email + password account. The caller has already checked username/email are free. */
+function createPasswordUser({ username, email, passwordHash }) {
+  const publicId = crypto.randomBytes(8).toString('hex');
+  const info = q.insertPasswordUser.run(publicId, `local:${publicId}`, email, username, username, passwordHash);
+  return q.userById.get(Number(info.lastInsertRowid));
+}
+const getUserByUsername = (username) => q.userByUsername.get(username) || null;
+const getUserByEmail = (email) => q.userByEmail.get(email) || null;
+const getPasswordHash = (userId) => (q.passwordHash.get(userId) || {}).password_hash || null;
 
 const getUserById = (id) => q.userById.get(id) || null;
 const getUserByPublicId = (publicId) => q.userByPublicId.get(publicId) || null;
@@ -331,6 +374,10 @@ module.exports = {
   close,
   // users / sessions / profiles
   upsertUser,
+  createPasswordUser,
+  getUserByUsername,
+  getUserByEmail,
+  getPasswordHash,
   getUserById,
   getUserByPublicId,
   updateUserProfile,

@@ -127,14 +127,14 @@ button, input { font: inherit; color: inherit; border-radius: 0; }
 .field { display: grid; gap: 0.5rem; }
 label { font-weight: 900; text-transform: uppercase; font-size: 0.95rem; }
 label.hint { font-weight: 700; text-transform: none; }
-input[type="text"], textarea {
+input[type="text"], input[type="email"], input[type="password"], textarea {
   width: 100%; padding: 0.85rem 1rem; border: var(--border); background: var(--paper);
   color: var(--ink); font-size: 1.1rem; font-weight: 700; box-shadow: var(--shadow-sm);
 }
-input[type="text"]::placeholder, textarea::placeholder { color: #6b6b6b; }
+input[type="text"]::placeholder, input[type="email"]::placeholder, textarea::placeholder { color: #6b6b6b; }
 textarea { resize: vertical; min-height: 84px; line-height: 1.4; }
 input[readonly], textarea[readonly] { background: var(--grey); box-shadow: none; border-style: dashed; cursor: default; }
-input[type="text"]:focus-visible, textarea:focus-visible { outline: none; background: var(--yellow); box-shadow: 5px 5px 0 var(--blue); }
+input[type="text"]:focus-visible, input[type="email"]:focus-visible, input[type="password"]:focus-visible, textarea:focus-visible { outline: none; background: var(--yellow); box-shadow: 5px 5px 0 var(--blue); }
 .code-input { text-align: center; letter-spacing: 0.35em; text-transform: uppercase; font-weight: 900; font-size: 1.35rem; }
 .form-error {
   min-height: 1.4rem; margin-top: 1.25rem; padding: 0.6rem 0.9rem; font-weight: 900;
@@ -337,7 +337,21 @@ input[type="text"]:focus-visible, textarea:focus-visible { outline: none; backgr
 
 .signin-card { display: grid; gap: 1rem; max-width: 520px; }
 .signin-card h2 { font-size: 1.5rem; }
-.google-button { min-height: 44px; display: flex; }
+/* Google's own button, kept compact (it is rendered by Google inside this box) */
+.google-button { min-height: 32px; display: flex; justify-content: center; }
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; border: var(--border); box-shadow: var(--shadow-sm); margin-bottom: 0.6rem; }
+.auth-tab {
+  padding: 0.75rem 0.5rem; background: var(--paper); color: var(--ink); border: 0; cursor: pointer;
+  font-family: var(--font-display); font-weight: 900; font-size: 1rem; text-transform: uppercase;
+}
+.auth-tab + .auth-tab { border-left: var(--border); }
+.auth-tab:hover { background: var(--grey); }
+.auth-tab.is-active { background: var(--ink); color: var(--yellow); }
+.auth-form { display: grid; gap: 1rem; }
+.check { display: flex; align-items: center; gap: 0.6rem; font-size: 0.9rem; text-transform: none; cursor: pointer; }
+.check input { width: 22px; height: 22px; accent-color: var(--ink); }
+.or-line { display: flex; align-items: center; gap: 0.8rem; font-weight: 900; text-transform: uppercase; }
+.or-line::before, .or-line::after { content: ""; flex: 1; height: 4px; background: var(--ink); }
 .invite-note { background: var(--yellow); border: var(--border-thin); padding: 0.6rem 0.9rem; font-weight: 900; }
 .dev-login { display: grid; gap: 0.6rem; padding: 1rem; border: 3px dashed var(--ink); background: var(--grey); }
 .dev-login h3 { font-size: 1rem; }
