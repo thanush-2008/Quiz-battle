@@ -28,6 +28,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
 const database = require('./database');
+const { createAuth, avatarUrlFor } = require('./auth');
 
 // =============================================================================
 // 1. CONFIGURATION
@@ -85,8 +86,15 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
-      "connect-src 'self' ws: wss:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    "default-src 'self'; " +
+      // accounts.google.com/gsi/* is needed for the "Sign in with Google" button.
+      "script-src 'self' https://accounts.google.com/gsi/client; " +
+      "style-src 'self' https://accounts.google.com/gsi/style; " +
+      // *.googleusercontent.com = Google profile photos
+      "img-src 'self' data: https://*.googleusercontent.com; " +
+      "connect-src 'self' ws: wss: https://accounts.google.com/gsi/; " +
+      "frame-src https://accounts.google.com/gsi/; " +
+      "base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
   );
   next();
 });
@@ -95,6 +103,14 @@ app.use((req, res, next) => {
 app.get('/healthz', (req, res) => {
   res.json({ status: 'ok', uptimeSeconds: Math.round(process.uptime()) });
 });
+
+// Sign-in, sessions, profile and photo routes (see auth.js).
+const auth = createAuth({
+  isUserInActiveGame: (userId) => isUserInActiveGame(userId),
+  onSignOut: (userId) => signOutEverywhere(userId),
+  onProfileChanged: (userId) => refreshUserInRooms(userId),
+});
+app.use(auth.router);
 
 // Serve the frontend (public/index.html, style.css, app.js) from the same origin
 // as the Socket.IO server. That is why the frontend never needs a hard-coded URL.
@@ -126,6 +142,10 @@ function clientIp(socket) {
   }
   return socket.handshake.address;
 }
+
+// Only signed-in people may connect. This runs BEFORE the IP counter below, so
+// rejected connections never use up a slot.
+io.use(auth.socketMiddleware);
 
 io.use((socket, next) => {
   const ip = clientIp(socket);
@@ -246,6 +266,7 @@ function buildLeaderboard(room, { withChoices = false } = {}) {
       pointsEarned: p.lastPoints,
       correctCount: p.correctCount,
       connected: p.connected,
+      avatar: p.avatar,
     };
     // Individual choices are only revealed AFTER a question has ended.
     if (withChoices) entry.choice = p.lastChoice;
@@ -263,7 +284,7 @@ function publicState(room) {
     totalQuestions: room.questions.length || CONFIG.questionsPerGame,
     players: [...room.players.values()]
       .sort((a, b) => a.joinOrder - b.joinOrder)
-      .map((p) => ({ id: p.id, name: p.name, connected: p.connected, isHost: p.id === room.hostId })),
+      .map((p) => ({ id: p.id, name: p.name, avatar: p.avatar, connected: p.connected, isHost: p.id === room.hostId })),
     leaderboard: buildLeaderboard(room),
   };
 }
@@ -363,12 +384,70 @@ function cancelEmptyRoomCleanup(room) {
   room.emptyTimer = null;
 }
 
+// ---- Accounts <-> rooms -----------------------------------------------------
+/** Two people can share a display name; inside one room we add " 2", " 3" ... */
+function uniqueNameInRoom(room, base, exceptPlayer) {
+  const taken = new Set(
+    [...room.players.values()].filter((p) => p !== exceptPlayer).map((p) => p.name.toLowerCase())
+  );
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let n = 2; n < 1000; n += 1) {
+    const suffix = ` ${n}`;
+    const candidate = [...base].slice(0, CONFIG.maxNameLength - suffix.length).join('').trim() + suffix;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  return base;
+}
+
+/** True while this account is connected to a room that is running a quiz. */
+function isUserInActiveGame(userId) {
+  for (const room of rooms.values()) {
+    if (room.state !== 'question' && room.state !== 'reveal') continue;
+    for (const p of room.players.values()) if (p.userId === userId && p.connected) return true;
+  }
+  return false;
+}
+
+/** Copies the latest profile (name, photo) onto a player. Not used during a quiz. */
+function syncPlayerFromUser(room, player) {
+  const user = database.getUserById(player.userId);
+  if (!user) return;
+  player.name = uniqueNameInRoom(room, user.display_name, player);
+  player.avatar = avatarUrlFor(user);
+}
+
+/** The user edited their profile: update their seat in any waiting room. */
+function refreshUserInRooms(userId) {
+  for (const room of rooms.values()) {
+    if (room.state !== 'lobby') continue;
+    let changed = false;
+    for (const p of room.players.values()) {
+      if (p.userId === userId) {
+        syncPlayerFromUser(room, p);
+        changed = true;
+      }
+    }
+    if (changed) broadcastRoom(room);
+  }
+}
+
+/** Signing out (or being signed out) removes the person from rooms and drops their sockets. */
+function signOutEverywhere(userId) {
+  for (const socket of [...io.sockets.sockets.values()]) {
+    if (socket.data.userId !== userId) continue;
+    leaveCurrentRoom(socket, true);
+    socket.disconnect(true);
+  }
+}
+
 // ---- Players joining / leaving ----------------------------------------------
-function addPlayer(room, name, socket) {
+function addPlayer(room, user, socket) {
   const player = {
     id: crypto.randomBytes(6).toString('hex'),
     token: crypto.randomBytes(24).toString('hex'),
-    name,
+    userId: user.id, // which account this player is (from the verified session)
+    name: uniqueNameInRoom(room, user.display_name, null),
+    avatar: avatarUrlFor(user),
     socketId: socket.id,
     connected: true,
     joinOrder: room.nextJoinOrder++,
@@ -577,6 +656,7 @@ function finishGame(room) {
       roomCode: room.code,
       totalQuestions: room.questions.length,
       players: leaderboard.map((e) => ({
+        userId: (room.players.get(e.id) || {}).userId,
         name: e.name,
         score: e.score,
         correctCount: e.correctCount,
@@ -610,6 +690,7 @@ function resetRoom(room) {
     p.correctCount = 0;
     p.lastPoints = 0;
     p.lastChoice = null;
+    syncPlayerFromUser(room, p); // pick up any profile edits made after the quiz
   }
   ensureHost(room);
   touch(room);
@@ -665,8 +746,9 @@ function handle(socket, event, handler) {
 io.on('connection', (socket) => {
   // ---------------------------------------------------------------- create room
   handle(socket, 'room:create', (payload, ack) => {
-    const name = sanitizeName(payload.name);
-    if (!name) return fail(ack, NAME_ERROR, 'invalid_name');
+    // The name and photo come from the signed-in account, never from the browser.
+    const user = database.getUserById(socket.data.userId);
+    if (!user) return fail(ack, 'Please sign in again.', 'unauthorized');
     if (rooms.size >= CONFIG.maxRooms) {
       return fail(ack, 'The server is very busy right now. Please try again in a few minutes.', 'server_full');
     }
@@ -675,7 +757,7 @@ io.on('connection', (socket) => {
     const code = generateRoomCode();
     if (!code) return fail(ack, 'Could not create a room. Please try again.');
     const room = createRoom(code);
-    const player = addPlayer(room, name, socket);
+    const player = addPlayer(room, user, socket);
     room.hostId = player.id; // the creator is the host
 
     ok(ack, { code, playerId: player.id, token: player.token });
@@ -685,8 +767,8 @@ io.on('connection', (socket) => {
 
   // ------------------------------------------------------------------ join room
   handle(socket, 'room:join', (payload, ack) => {
-    const name = sanitizeName(payload.name);
-    if (!name) return fail(ack, NAME_ERROR, 'invalid_name');
+    const user = database.getUserById(socket.data.userId);
+    if (!user) return fail(ack, 'Please sign in again.', 'unauthorized');
     const code = normalizeRoomCode(payload.code);
     if (!code) return fail(ack, 'Room codes are 6 characters long, like K7P2XM.', 'invalid_code');
 
@@ -698,13 +780,20 @@ io.on('connection', (socket) => {
     if (room.players.size >= CONFIG.maxPlayers) {
       return fail(ack, `That room is full (${CONFIG.maxPlayers} players maximum).`, 'room_full');
     }
-    const lower = name.toLowerCase();
-    if ([...room.players.values()].some((p) => p.name.toLowerCase() === lower)) {
-      return fail(ack, 'Someone in that room already uses this name. Please pick another.', 'name_taken');
+
+    // One seat per account. A seat whose owner has dropped is released so they can come back.
+    const existing = [...room.players.values()].find((p) => p.userId === user.id);
+    if (existing) {
+      const mine = getContext(socket);
+      if (existing.connected && !(mine && mine.player === existing)) {
+        return fail(ack, 'You are already in that room from another tab or device.', 'already_in_room');
+      }
+      clearTimeout(existing.graceTimer);
+      room.players.delete(existing.id);
     }
 
     leaveCurrentRoom(socket, true);
-    const player = addPlayer(room, name, socket);
+    const player = addPlayer(room, user, socket);
     ok(ack, { code, playerId: player.id, token: player.token });
     membershipChanged(room);
     return undefined;
@@ -718,7 +807,7 @@ io.on('connection', (socket) => {
     if (!room) return fail(ack, 'That room no longer exists.', 'room_closed');
 
     const player = [...room.players.values()].find((p) => p.token && safeEqual(p.token, token));
-    if (!player) return fail(ack, 'Your seat in that room is no longer available.', 'rejoin_failed');
+    if (!player || player.userId !== socket.data.userId) return fail(ack, 'Your seat in that room is no longer available.', 'rejoin_failed');
 
     // If this socket is sitting in some other room, leave it first.
     const current = getContext(socket);

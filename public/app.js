@@ -10,6 +10,7 @@
  *   6. Quiz: question, timer, answering, results
  *   7. Leaderboards & final results
  *   8. Socket.IO event listeners (everything the server tells us)
+ *   8b. Account: Google sign-in, profile panel, photo upload
  *   9. Start-up
  *
  * IMPORTANT: this file only DISPLAYS what the server tells it. The server owns
@@ -27,7 +28,6 @@
    * 1. SETUP
    * ======================================================================= */
   const SESSION_KEY = 'quizbattle.session'; // survives page refreshes (this tab only)
-  const NAME_KEY = 'quizbattle.playerName'; // remembered between visits
   const NAME_PATTERN = /^[\p{L}\p{M}\p{N} ._'-]+$/u;
   const CODE_PATTERN = /^[A-HJ-NP-Z2-9]{6}$/;
   const OPTION_LETTERS = ['A', 'B', 'C', 'D'];
@@ -38,8 +38,44 @@
     banner: $('connection-banner'),
     bannerText: $('connection-text'),
     toasts: $('toasts'),
+    // header + account
+    profileBtn: $('btn-profile'),
+    headerAvatar: $('header-avatar'),
+    headerName: $('header-name'),
+    // sign-in
+    googleButton: $('google-button'),
+    signinStatus: $('signin-status'),
+    signinError: $('signin-error'),
+    signinInvite: $('signin-invite'),
+    devLogin: $('dev-login'),
+    devName: $('dev-name'),
+    // profile dialog
+    dlg: $('profile-dialog'),
+    dlgClose: $('profile-close'),
+    dlgLock: $('profile-lock'),
+    dlgAvatar: $('profile-avatar'),
+    dlgEmail: $('profile-email'),
+    photoActions: $('photo-actions'),
+    btnPhoto: $('btn-photo'),
+    btnPhotoRemove: $('btn-photo-remove'),
+    photoInput: $('photo-input'),
+    profileForm: $('profile-form'),
+    pfName: $('pf-name'),
+    pfBio: $('pf-bio'),
+    pfBioCount: $('pf-bio-count'),
+    pfLocation: $('pf-location'),
+    pfTopic: $('pf-topic'),
+    profileError: $('profile-error'),
+    btnSave: $('btn-save-profile'),
+    btnSignOut: $('btn-signout'),
+    statGames: $('stat-games'),
+    statWins: $('stat-wins'),
+    statBest: $('stat-best'),
+    statCorrect: $('stat-correct'),
     // home
-    nameInput: $('player-name'),
+    homeAvatar: $('home-avatar'),
+    homeName: $('home-name'),
+    btnEditProfile: $('btn-edit-profile'),
     btnCreate: $('btn-create'),
     joinForm: $('join-form'),
     codeInput: $('room-code-input'),
@@ -79,6 +115,8 @@
   };
 
   const state = {
+    user: null, // the signed-in account (from /api/me), or null
+    config: null, // { googleClientId, devLogin } from /api/config
     session: null, // { code, playerId, token } — who am I and where
     room: null, // latest 'room:update' from the server
     view: 'home',
@@ -184,7 +222,7 @@
   /* =========================================================================
    * 3. VIEW SWITCHING
    * ======================================================================= */
-  const VIEW_NAMES = ['home', 'lobby', 'quiz', 'results'];
+  const VIEW_NAMES = ['signin', 'home', 'lobby', 'quiz', 'results'];
 
   function showView(name) {
     const changed = state.view !== name;
@@ -195,6 +233,14 @@
       if (heading) heading.focus({ preventScroll: true }); // tells screen readers where they are
       window.scrollTo({ top: 0 });
     }
+    el.profileBtn.hidden = !state.user || name === 'signin';
+    // When the quiz starts, close the profile panel so nothing distracts from the game;
+    // if it is opened again during the quiz it is view-only.
+    if (changed && name === 'quiz' && el.dlg.open) {
+      el.dlg.close();
+      toast('The quiz started — profile is view-only until it ends.', 'info', 3000);
+    }
+    applyProfileLock();
   }
 
   function resetToHome(message, type = 'info') {
@@ -217,20 +263,13 @@
     el.homeError.textContent = message || '';
   }
 
-  /** Reads and validates the name field (the server validates again). */
+  /** Your name comes from your profile (the server uses the signed-in account, not this value). */
   function getValidName() {
-    const name = el.nameInput.value.replace(/\s+/g, ' ').trim();
-    if (!name) {
-      setHomeError('Please enter your name first.');
-      el.nameInput.focus();
+    if (!state.user) {
+      setHomeError('Please sign in first.');
       return null;
     }
-    if ([...name].length > MAX_NAME_LENGTH || !NAME_PATTERN.test(name)) {
-      setHomeError(`Names must be 1–${MAX_NAME_LENGTH} characters: letters, numbers, spaces and . _ ' - only.`);
-      el.nameInput.focus();
-      return null;
-    }
-    return name;
+    return state.user.displayName;
   }
 
   function getValidCode() {
@@ -243,13 +282,8 @@
     return code;
   }
 
-  function enterRoom(response, name) {
+  function enterRoom(response) {
     saveSession({ code: response.code, playerId: response.playerId, token: response.token });
-    try {
-      localStorage.setItem(NAME_KEY, name);
-    } catch (err) {
-      /* ignore */
-    }
     setHomeError('');
     history.replaceState(null, '', location.pathname); // drop ?room=CODE from the address bar
     showView('lobby');
@@ -263,7 +297,7 @@
     const response = await request('room:create', { name });
     setBusy(el.btnCreate, false);
     if (!response.ok) return setHomeError(response.error);
-    enterRoom(response, name);
+    enterRoom(response);
     return toast('Room created! Share the code with your friends.', 'success');
   }
 
@@ -278,7 +312,7 @@
     const response = await request('room:join', { name, code });
     setBusy(el.btnJoin, false);
     if (!response.ok) return setHomeError(response.error);
-    enterRoom(response, name);
+    enterRoom(response);
     return toast(`Joined room ${response.code}.`, 'success');
   }
 
@@ -309,8 +343,8 @@
     for (const player of room.players) {
       const item = h('li', 'player');
       if (!player.connected) item.classList.add('is-away');
-      const avatar = h('span', 'avatar', [...player.name][0].toUpperCase());
-      avatar.style.setProperty('--hue', hueFor(player.name));
+      const avatar = h('span', 'avatar');
+      paintAvatar(avatar, player.name, player.avatar);
       avatar.setAttribute('aria-hidden', 'true');
       const name = h('span', 'player-name', player.name);
       if (player.id === me) name.append(h('span', 'tag', 'You'));
@@ -530,6 +564,10 @@
         rank.setAttribute('aria-label', `Rank ${entry.rank}`);
       }
 
+      const avatar = h('span', 'avatar avatar-sm lb-avatar');
+      paintAvatar(avatar, entry.name, entry.avatar);
+      avatar.setAttribute('aria-hidden', 'true');
+
       const name = h('span', 'lb-name');
       const line = h('span', 'lb-name-line', entry.name);
       if (entry.id === myId()) line.append(h('span', 'tag', 'You'));
@@ -537,7 +575,7 @@
       name.append(line);
       if (final) name.append(h('span', 'lb-sub', `${entry.correctCount} of ${total} correct`));
 
-      item.append(rank, name);
+      item.append(rank, avatar, name);
       if (showDelta) {
         const gained = entry.pointsEarned > 0;
         item.append(h('span', `lb-delta${gained ? ' gain' : ''}`, `+${entry.pointsEarned}`));
@@ -598,7 +636,7 @@
     el.banner.hidden = false;
     return;
   }
-  const socket = io(); // same origin as the page — no hard-coded address
+  const socket = io({ autoConnect: false }); // same origin as the page; we connect after sign-in
 
   socket.on('connect', async () => {
     el.banner.hidden = true;
@@ -625,6 +663,13 @@
   });
 
   socket.on('connect_error', (err) => {
+    if (err && err.message === 'unauthorized') {
+      // Our login cookie is missing or expired.
+      el.banner.hidden = true;
+      clearSession();
+      showSignin('Your session ended. Please sign in again.');
+      return;
+    }
     state.wasDisconnected = true;
     el.bannerText.textContent = err && err.message && err.message.startsWith('Too many') ? err.message : "Can't reach the server. Retrying…";
     el.banner.hidden = false;
@@ -684,6 +729,337 @@
   socket.on('room:closed', ({ reason }) => resetToHome(reason || 'The room was closed.'));
 
   /* =========================================================================
+   * 8b. ACCOUNT: GOOGLE SIGN-IN, PROFILE PANEL, PHOTO UPLOAD
+   * ======================================================================= */
+  /** Fetch wrapper: always resolves to { ok, status, data } and never throws. */
+  async function api(path, { method = 'GET', json, body, headers = {} } = {}) {
+    try {
+      const options = { method, credentials: 'same-origin', headers: { ...headers } };
+      if (json !== undefined) {
+        options.headers['Content-Type'] = 'application/json';
+        options.body = JSON.stringify(json);
+      } else if (body !== undefined) {
+        options.body = body;
+      }
+      const res = await fetch(path, options);
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (err) {
+        /* empty body */
+      }
+      return { ok: res.ok, status: res.status, data };
+    } catch (err) {
+      return { ok: false, status: 0, data: { error: 'Could not reach the server. Check your connection.' } };
+    }
+  }
+
+  /** Draws a profile picture, or a coloured circle with the first letter if there is none. */
+  function paintAvatar(node, name, picture) {
+    const initial = ([...(name || '?')][0] || '?').toUpperCase();
+    node.replaceChildren();
+    node.style.setProperty('--hue', hueFor(name || '?'));
+    if (!picture) {
+      node.textContent = initial;
+      return;
+    }
+    const img = document.createElement('img');
+    img.alt = '';
+    img.decoding = 'async';
+    img.referrerPolicy = 'no-referrer';
+    img.addEventListener('error', () => node.replaceChildren(document.createTextNode(initial)));
+    img.src = picture;
+    node.appendChild(img);
+  }
+
+  /** Updates every place that shows "me": header button, home card, profile panel. */
+  function renderUser() {
+    const user = state.user;
+    if (!user) return;
+    paintAvatar(el.headerAvatar, user.displayName, user.picture);
+    el.headerName.textContent = user.displayName;
+    el.profileBtn.setAttribute('aria-label', `Open my profile (${user.displayName})`);
+    paintAvatar(el.homeAvatar, user.displayName, user.picture);
+    el.homeName.textContent = user.displayName;
+    el.profileBtn.hidden = state.view === 'signin';
+
+    paintAvatar(el.dlgAvatar, user.displayName, user.picture);
+    el.dlgEmail.textContent = user.email;
+    el.btnPhotoRemove.hidden = !user.hasCustomPicture;
+    const stats = user.stats || {};
+    el.statGames.textContent = String(stats.games || 0);
+    el.statWins.textContent = String(stats.wins || 0);
+    el.statBest.textContent = String(stats.bestScore || 0);
+    el.statCorrect.textContent = String(stats.correctAnswers || 0);
+  }
+
+  // ---- Sign-in screen -------------------------------------------------------
+  let googleLoading = null;
+  function loadGoogleScript() {
+    if (googleLoading) return googleLoading;
+    googleLoading = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Google script blocked'));
+      document.head.appendChild(script);
+    });
+    return googleLoading;
+  }
+
+  async function onGoogleCredential(response) {
+    el.signinError.textContent = '';
+    const result = await api('/auth/google', { method: 'POST', json: { credential: response.credential } });
+    if (!result.ok) {
+      el.signinError.textContent = result.data.error || 'Google sign-in failed. Please try again.';
+      return;
+    }
+    signedIn(result.data.user);
+  }
+
+  async function showSignin(message) {
+    state.user = null;
+    showView('signin');
+    el.signinError.textContent = message || '';
+
+    const code = new URLSearchParams(location.search).get('room');
+    el.signinInvite.hidden = !code;
+    if (code) el.signinInvite.textContent = `You were invited to room ${code.toUpperCase().slice(0, 6)}. Sign in to join it.`;
+
+    if (!state.config) {
+      const config = await api('/api/config');
+      state.config = config.ok ? config.data : { googleClientId: null, devLogin: false };
+    }
+    el.devLogin.hidden = !state.config.devLogin;
+
+    if (!state.config.googleClientId) {
+      el.signinStatus.textContent = state.config.devLogin
+        ? 'Google sign-in is not configured (no GOOGLE_CLIENT_ID). Use the test login below.'
+        : 'Google sign-in is not set up on this server yet. The site owner needs to add GOOGLE_CLIENT_ID.';
+      return;
+    }
+    try {
+      await loadGoogleScript();
+      window.google.accounts.id.initialize({
+        client_id: state.config.googleClientId,
+        callback: onGoogleCredential,
+        auto_select: false,
+      });
+      el.googleButton.replaceChildren();
+      window.google.accounts.id.renderButton(el.googleButton, {
+        theme: 'filled_black',
+        size: 'large',
+        text: 'signin_with',
+        shape: 'rectangular',
+        width: Math.min(320, Math.max(200, el.googleButton.clientWidth || 300)),
+      });
+      el.signinStatus.textContent = 'Pick your Google account to continue.';
+    } catch (err) {
+      el.signinStatus.textContent = 'Could not load Google sign-in. Disable ad blockers for this site and refresh.';
+    }
+  }
+
+  function signedIn(user) {
+    state.user = user;
+    renderUser();
+    showView('home'); // if we were in a room, the re-join on connect moves us to the right screen
+    if (state.session) {
+      el.bannerText.textContent = 'Reconnecting to your room…';
+      el.banner.hidden = false;
+    }
+    if (!socket.connected) socket.connect();
+  }
+
+  async function bootstrap() {
+    const me = await api('/api/me');
+    if (me.ok && me.data.user) signedIn(me.data.user);
+    else showSignin();
+  }
+
+  // ---- Profile panel -------------------------------------------------------
+  /** During a quiz the panel is view-only so players stay focused on the game. */
+  const isQuizRunning = () => state.view === 'quiz';
+
+  function applyProfileLock() {
+    const locked = isQuizRunning();
+    for (const field of [el.pfName, el.pfBio, el.pfLocation, el.pfTopic]) field.readOnly = locked;
+    el.photoActions.hidden = locked;
+    el.btnSave.hidden = locked;
+    el.btnSignOut.hidden = locked;
+    el.dlgLock.hidden = !locked;
+    el.dlgLock.textContent = locked ? '🔒 Quiz in progress — your profile is view-only. Focus on the game!' : '';
+  }
+
+  function fillProfileForm() {
+    const user = state.user;
+    if (!user) return;
+    el.pfName.value = user.displayName;
+    el.pfBio.value = user.bio;
+    el.pfLocation.value = user.location;
+    el.pfTopic.value = user.favoriteTopic;
+    el.pfBioCount.textContent = String([...user.bio].length);
+    el.profileError.textContent = '';
+    renderUser();
+  }
+
+  async function openProfile() {
+    if (!state.user) return;
+    fillProfileForm();
+    applyProfileLock();
+    if (!el.dlg.open) el.dlg.showModal();
+    el.dlg.scrollTop = 0; // always start at the top (the photo and stats)
+    // Refresh the stats in the background (they change after every game).
+    const me = await api('/api/me');
+    if (me.ok && me.data.user && state.user) {
+      state.user.stats = me.data.user.stats;
+      renderUser();
+    }
+  }
+
+  async function onSaveProfile(event) {
+    event.preventDefault();
+    if (isQuizRunning()) return;
+    el.profileError.textContent = '';
+    const displayName = el.pfName.value.replace(/\s+/g, ' ').trim();
+    if (!displayName || [...displayName].length > MAX_NAME_LENGTH || !NAME_PATTERN.test(displayName)) {
+      el.profileError.textContent = `Display names must be 1–${MAX_NAME_LENGTH} characters: letters, numbers, spaces and . _ ' - only.`;
+      el.pfName.focus();
+      return;
+    }
+    setBusy(el.btnSave, true);
+    const result = await api('/api/profile', {
+      method: 'PUT',
+      json: { displayName, bio: el.pfBio.value, location: el.pfLocation.value, favoriteTopic: el.pfTopic.value },
+    });
+    setBusy(el.btnSave, false);
+    if (!result.ok) {
+      el.profileError.textContent = result.data.error || 'Could not save your profile.';
+      return;
+    }
+    state.user = result.data.user;
+    fillProfileForm();
+    toast('Profile saved.', 'success', 2500);
+  }
+
+  // ---- Photo upload: crop to a square, shrink to 256 px, send as a small JPEG ------
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('read failed'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => resolve({ source: img, width: img.naturalWidth, height: img.naturalHeight });
+        img.onerror = () => reject(new Error('decode failed'));
+        img.src = reader.result; // a data: URL (allowed by our security policy)
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function imageToSquareJpeg(file, size = 256) {
+    let picture;
+    try {
+      const bitmap = await createImageBitmap(file); // also applies the photo's rotation
+      picture = { source: bitmap, width: bitmap.width, height: bitmap.height };
+    } catch (err) {
+      picture = await loadImage(file);
+    }
+    const side = Math.min(picture.width, picture.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff'; // PNGs with transparency get a white background
+    ctx.fillRect(0, 0, size, size);
+    ctx.drawImage(picture.source, (picture.width - side) / 2, (picture.height - side) / 2, side, side, 0, 0, size, size);
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('encode failed'))), 'image/jpeg', 0.85);
+    });
+  }
+
+  async function onPhotoChosen() {
+    const file = el.photoInput.files && el.photoInput.files[0];
+    el.photoInput.value = ''; // lets the same file be chosen again later
+    if (!file || isQuizRunning()) return;
+    el.profileError.textContent = '';
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+      el.profileError.textContent = 'Please choose a JPEG, PNG or WebP image.';
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      el.profileError.textContent = 'That image is too large (10 MB maximum).';
+      return;
+    }
+    setBusy(el.btnPhoto, true);
+    try {
+      const blob = await imageToSquareJpeg(file);
+      const result = await api('/api/profile/avatar', { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
+      if (!result.ok) throw new Error(result.data.error || 'Upload failed.');
+      state.user = result.data.user;
+      renderUser();
+      toast('Photo updated.', 'success', 2500);
+    } catch (err) {
+      el.profileError.textContent = err.message === 'decode failed' ? 'We could not read that image.' : err.message || 'Could not upload the photo.';
+    } finally {
+      setBusy(el.btnPhoto, false);
+    }
+  }
+
+  async function onRemovePhoto() {
+    if (isQuizRunning()) return;
+    const result = await api('/api/profile/avatar', { method: 'DELETE' });
+    if (!result.ok) {
+      el.profileError.textContent = result.data.error || 'Could not remove the photo.';
+      return;
+    }
+    state.user = result.data.user;
+    renderUser();
+    toast('Photo removed.', 'info', 2500);
+  }
+
+  async function onSignOut() {
+    if (isQuizRunning()) return;
+    setBusy(el.btnSignOut, true);
+    await api('/auth/logout', { method: 'POST' });
+    clearSession();
+    try {
+      if (window.google && window.google.accounts) window.google.accounts.id.disableAutoSelect();
+    } catch (err) {
+      /* ignore */
+    }
+    location.assign(location.pathname); // fresh start on the sign-in screen
+  }
+
+  async function onDevLogin(event) {
+    event.preventDefault();
+    el.signinError.textContent = '';
+    const result = await api('/auth/dev', { method: 'POST', json: { name: el.devName.value } });
+    if (!result.ok) {
+      el.signinError.textContent = result.data.error || 'Test sign-in failed.';
+      return;
+    }
+    signedIn(result.data.user);
+  }
+
+  el.profileBtn.addEventListener('click', openProfile);
+  el.btnEditProfile.addEventListener('click', openProfile);
+  el.dlgClose.addEventListener('click', () => el.dlg.close());
+  el.dlg.addEventListener('click', (event) => {
+    if (event.target === el.dlg) el.dlg.close(); // click on the dark backdrop
+  });
+  el.profileForm.addEventListener('submit', onSaveProfile);
+  el.btnPhoto.addEventListener('click', () => el.photoInput.click());
+  el.photoInput.addEventListener('change', onPhotoChosen);
+  el.btnPhotoRemove.addEventListener('click', onRemovePhoto);
+  el.btnSignOut.addEventListener('click', onSignOut);
+  el.devLogin.addEventListener('submit', onDevLogin);
+  el.pfBio.addEventListener('input', () => {
+    el.pfBioCount.textContent = String([...el.pfBio.value].length);
+  });
+
+  /* =========================================================================
    * 9. START-UP: wire up the buttons
    * ======================================================================= */
   el.btnCreate.addEventListener('click', onCreateRoom);
@@ -700,13 +1076,6 @@
     if (state.room) copyText(`${location.origin}/?room=${state.room.code}`, 'Invite link copied!');
   });
 
-  // Enter in the name box: join if a code is typed, otherwise create a room.
-  el.nameInput.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter') return;
-    event.preventDefault();
-    if (el.codeInput.value.trim()) el.joinForm.requestSubmit();
-    else onCreateRoom();
-  });
   // Keep the code box tidy: uppercase, no spaces.
   el.codeInput.addEventListener('input', () => {
     el.codeInput.value = el.codeInput.value.toUpperCase().replace(/[^A-Z0-9-]/g, '');
@@ -714,6 +1083,7 @@
 
   // Keyboard shortcuts while a question is open: 1-4 or A-D.
   document.addEventListener('keydown', (event) => {
+    if (el.dlg.open) return; // typing in the profile panel must never answer a question
     if (state.view !== 'quiz' || state.phase !== 'question' || state.answered || !state.question) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const keyMap = { 1: 0, 2: 1, 3: 2, 4: 3, a: 0, b: 1, c: 2, d: 3 };
@@ -724,20 +1094,12 @@
     }
   });
 
-  // Prefill from a previous visit / an invite link like  https://site/?room=K7P2XM
-  try {
-    el.nameInput.value = localStorage.getItem(NAME_KEY) || '';
-  } catch (err) {
-    /* ignore */
-  }
+  // An invite link like  https://site/?room=K7P2XM  pre-fills the room code.
   const invited = new URLSearchParams(location.search).get('room');
   if (invited) {
     el.codeInput.value = invited.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     setHomeError('');
   }
   state.session = loadSession(); // a re-join is attempted as soon as the socket connects
-  if (state.session) {
-    el.bannerText.textContent = 'Reconnecting to your room…';
-    el.banner.hidden = false;
-  }
+  bootstrap();
 })();

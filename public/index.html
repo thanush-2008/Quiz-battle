@@ -27,9 +27,41 @@
       </svg>
       <span class="brand-name">Quiz<span>Battle</span></span>
     </a>
+
+    <!-- Top-right profile button: shown on every screen once you are signed in -->
+    <button id="btn-profile" class="profile-btn" type="button" hidden aria-haspopup="dialog" aria-label="Open my profile">
+      <span id="header-avatar" class="avatar avatar-sm" aria-hidden="true"></span>
+      <span id="header-name" class="profile-btn-name"></span>
+    </button>
   </header>
 
   <main id="main" class="container">
+
+    <!-- ===================================================== 0. SIGN IN -->
+    <section id="view-signin" class="view" hidden aria-labelledby="signin-title">
+      <div class="hero">
+        <p class="eyebrow">Real-time multiplayer trivia</p>
+        <h1 id="signin-title" class="view-title" tabindex="-1">Sign in <span class="gradient-text">to play.</span></h1>
+        <p class="lead">Use your Google account to get a profile, a photo, your own stats and a name your friends recognise.</p>
+      </div>
+
+      <div class="card signin-card">
+        <p id="signin-invite" class="invite-note" hidden></p>
+        <h2>Continue with Google</h2>
+        <div id="google-button" class="google-button" aria-live="polite"></div>
+        <p id="signin-status" class="hint">Loading Google sign-in…</p>
+        <p id="signin-error" class="form-error" role="alert"></p>
+
+        <!-- Local testing only: the server shows this form only when DEV_LOGIN=true and NODE_ENV is not production -->
+        <form id="dev-login" class="dev-login" hidden novalidate>
+          <h3>Test login (development only)</h3>
+          <label for="dev-name">Pick any name</label>
+          <input id="dev-name" type="text" maxlength="20" autocomplete="off" placeholder="e.g. Alice">
+          <button class="btn btn-ghost btn-block" type="submit">Test sign-in</button>
+        </form>
+        <p class="hint">We only use your name, email and photo from Google to build your QuizBattle profile. We never post anything.</p>
+      </div>
+    </section>
 
     <!-- ===================================================== 1. HOMEPAGE -->
     <section id="view-home" class="view" aria-labelledby="home-title">
@@ -40,11 +72,13 @@
       </div>
 
       <div class="card home-card">
-        <div class="field">
-          <label for="player-name">Your name</label>
-          <input id="player-name" type="text" maxlength="20" autocomplete="nickname" spellcheck="false"
-                 placeholder="e.g. QuizWizard" aria-describedby="name-hint">
-          <p id="name-hint" class="hint">1–20 characters. Letters, numbers, spaces and . _ ' - are allowed.</p>
+        <div class="player-chip">
+          <span id="home-avatar" class="avatar avatar-lg" aria-hidden="true"></span>
+          <div class="player-chip-text">
+            <p class="label">Playing as</p>
+            <p id="home-name" class="home-name"></p>
+          </div>
+          <button id="btn-edit-profile" class="btn btn-ghost btn-sm" type="button">Edit profile</button>
         </div>
 
         <div class="home-actions">
@@ -180,6 +214,63 @@
   <footer class="site-footer">
     <p>QuizBattle · Built with Node.js, Express, Socket.IO &amp; SQLite</p>
   </footer>
+
+  <!-- ===================================================== PROFILE (opens from the top-right button) -->
+  <dialog id="profile-dialog" class="profile-dialog" aria-labelledby="profile-title">
+    <div class="dialog-head">
+      <h2 id="profile-title">My Profile</h2>
+      <button id="profile-close" class="btn btn-ghost btn-sm" type="button" aria-label="Close profile">Close ✕</button>
+    </div>
+
+    <div id="profile-lock" class="lock-note" role="status" hidden></div>
+
+    <div class="profile-top">
+      <span id="profile-avatar" class="avatar avatar-xl" aria-hidden="true"></span>
+      <div class="profile-top-text">
+        <p id="profile-email" class="hint"></p>
+        <div class="btn-row" id="photo-actions">
+          <button id="btn-photo" class="btn btn-secondary btn-sm" type="button">Upload photo</button>
+          <button id="btn-photo-remove" class="btn btn-ghost btn-sm" type="button">Remove photo</button>
+        </div>
+        <input id="photo-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      </div>
+    </div>
+
+    <dl class="stats" aria-label="My stats">
+      <div><dt>Games</dt><dd id="stat-games">0</dd></div>
+      <div><dt>Wins</dt><dd id="stat-wins">0</dd></div>
+      <div><dt>Best</dt><dd id="stat-best">0</dd></div>
+      <div><dt>Correct</dt><dd id="stat-correct">0</dd></div>
+    </dl>
+
+    <form id="profile-form" class="profile-form" novalidate>
+      <div class="field">
+        <label for="pf-name">Display name</label>
+        <input id="pf-name" type="text" maxlength="20" autocomplete="nickname" spellcheck="false">
+        <p class="hint">Shown to other players. 1–20 characters: letters, numbers, spaces and . _ ' -</p>
+      </div>
+      <div class="field">
+        <label for="pf-bio">Bio</label>
+        <textarea id="pf-bio" maxlength="140" rows="3" placeholder="Tell players something about you"></textarea>
+        <p class="hint"><span id="pf-bio-count">0</span> / 140</p>
+      </div>
+      <div class="field">
+        <label for="pf-location">Location</label>
+        <input id="pf-location" type="text" maxlength="40" autocomplete="off" placeholder="e.g. Singapore">
+      </div>
+      <div class="field">
+        <label for="pf-topic">Favorite topic</label>
+        <input id="pf-topic" type="text" maxlength="30" autocomplete="off" placeholder="e.g. Space, Football, Movies">
+      </div>
+
+      <p id="profile-error" class="form-error" role="alert"></p>
+
+      <div class="dialog-actions">
+        <button id="btn-save-profile" class="btn btn-primary" type="submit">Save changes</button>
+        <button id="btn-signout" class="btn btn-danger" type="button">Sign out</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- Pop-up messages (errors, success notices) -->
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>

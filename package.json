@@ -6,7 +6,9 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "local": "node --env-file=.env server.js",
+    "local:dev": "node --watch --env-file=.env server.js"
   },
   "engines": {
     "node": ">=20"
@@ -14,6 +16,7 @@
   "dependencies": {
     "better-sqlite3": "^12.2.0",
     "express": "^4.21.2",
+    "google-auth-library": "^10.9.1",
     "socket.io": "^4.8.1"
   },
   "license": "MIT"
