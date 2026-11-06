@@ -51,7 +51,8 @@ db.exec(`
     option_b      TEXT    NOT NULL,
     option_c      TEXT    NOT NULL,
     option_d      TEXT    NOT NULL,
-    correct_index INTEGER NOT NULL CHECK (correct_index BETWEEN 0 AND 3)
+    correct_index INTEGER NOT NULL CHECK (correct_index BETWEEN 0 AND 3),
+    category      TEXT    NOT NULL DEFAULT 'general'
   );
 
   -- Question text must be unique so the bank can be re-seeded safely.
@@ -103,6 +104,12 @@ db.exec(`
   );
 `);
 
+// Older databases (from before categories existed) do not have questions.category yet.
+if (!db.prepare('PRAGMA table_info(questions)').all().some((c) => c.name === 'category')) {
+  db.exec("ALTER TABLE questions ADD COLUMN category TEXT NOT NULL DEFAULT 'general'");
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_questions_category ON questions(category)');
+
 // Older databases (from before sign-in existed) do not have game_results.user_id yet.
 if (!db.prepare('PRAGMA table_info(game_results)').all().some((c) => c.name === 'user_id')) {
   db.exec('ALTER TABLE game_results ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL');
@@ -123,21 +130,28 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email COLLATE NOCAS
 //    yet (matched by question text), so adding a line to questions-bank.js and
 //    restarting is enough. Questions you INSERT yourself are never touched.
 // ---------------------------------------------------------------------------
-const QUESTION_BANK = require('./questions-bank');
+const { CATEGORIES, QUESTIONS: QUESTION_BANK } = require('./questions-bank');
 
 function seedQuestions() {
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO questions (text, option_a, option_b, option_c, option_d, correct_index)
-     VALUES (?, ?, ?, ?, ?, 0)`
+    `INSERT OR IGNORE INTO questions (text, option_a, option_b, option_c, option_d, correct_index, category)
+     VALUES (?, ?, ?, ?, ?, 0, ?)`
   );
+  // Questions that already exist (from an older version) get their category filled in / corrected.
+  const setCategory = db.prepare('UPDATE questions SET category = ? WHERE text = ? AND category <> ?');
   // In the bank file the correct answer is first, so correct_index = 0 here.
   // The answers are shuffled every time a game starts (see getRandomQuestions).
-  const insertAll = db.transaction((rows) => {
+  const insertAll = db.transaction(() => {
     let added = 0;
-    for (const [text, a, b, c, d] of rows) added += insert.run(text, a, b, c, d).changes;
+    for (const [category, rows] of Object.entries(QUESTION_BANK)) {
+      for (const [text, a, b, c, d] of rows) {
+        added += insert.run(text, a, b, c, d, category).changes;
+        setCategory.run(category, text, category);
+      }
+    }
     return added;
   });
-  return insertAll(QUESTION_BANK);
+  return insertAll();
 }
 
 const seeded = seedQuestions();
@@ -146,7 +160,6 @@ if (seeded > 0) console.log(`[db] Added ${seeded} new questions to ${DB_PATH}`);
 // ---------------------------------------------------------------------------
 // 4. Helper functions used by server.js
 // ---------------------------------------------------------------------------
-const selectRandomQuestions = db.prepare('SELECT * FROM questions ORDER BY RANDOM() LIMIT ?');
 const insertGame = db.prepare(
   'INSERT INTO games (room_code, total_questions, player_count) VALUES (?, ?, ?)'
 );
@@ -180,27 +193,67 @@ function toQuestion(row) {
   };
 }
 
+/** "mixed" (or nothing) means every category. */
+const MIXED = 'mixed';
+
 /**
  * Returns up to `limit` random questions with shuffled answers.
- * @param {number} limit
- * @param {number[]} excludeIds question ids to avoid (e.g. already played in this room).
- *        If the rest of the bank is too small, the shortfall is filled from the excluded ones.
+ * @param {number}   limit
+ * @param {number[]} excludeIds question ids to avoid (already played in this room).
+ *        If the rest of the category is too small, the shortfall is filled from the excluded ones.
+ * @param {string}   category   a category id, or "mixed" for all
  */
-function getRandomQuestions(limit, excludeIds = []) {
+function getRandomQuestions(limit, excludeIds = [], category = MIXED) {
   const ids = excludeIds.filter(Number.isInteger);
+  const useCategory = category && category !== MIXED;
   const marks = ids.map(() => '?').join(',');
-  const fresh = ids.length
-    ? db.prepare(`SELECT * FROM questions WHERE id NOT IN (${marks}) ORDER BY RANDOM() LIMIT ?`).all(...ids, limit)
-    : selectRandomQuestions.all(limit);
+  const catSql = useCategory ? ' AND category = ?' : '';
+  const catArg = useCategory ? [category] : [];
 
-  let rows = fresh;
+  let rows = db
+    .prepare(`SELECT * FROM questions WHERE 1 = 1${ids.length ? ` AND id NOT IN (${marks})` : ''}${catSql} ORDER BY RANDOM() LIMIT ?`)
+    .all(...ids, ...catArg, limit);
   if (rows.length < limit && ids.length) {
     const extra = db
-      .prepare(`SELECT * FROM questions WHERE id IN (${marks}) ORDER BY RANDOM() LIMIT ?`)
-      .all(...ids, limit - rows.length);
+      .prepare(`SELECT * FROM questions WHERE id IN (${marks})${catSql} ORDER BY RANDOM() LIMIT ?`)
+      .all(...ids, ...catArg, limit - rows.length);
     rows = rows.concat(extra);
   }
   return shuffle(rows).map(toQuestion);
+}
+
+/** The categories people can choose from, with how many questions each has. "Mixed" is first. */
+function getCategories() {
+  const counts = new Map(db.prepare('SELECT category, COUNT(*) AS n FROM questions GROUP BY category').all().map((r) => [r.category, r.n]));
+  const list = [];
+  const known = new Set();
+  for (const c of CATEGORIES) {
+    known.add(c.id);
+    if (counts.get(c.id)) list.push({ id: c.id, label: c.label, description: c.description, count: counts.get(c.id) });
+  }
+  // Questions you added yourself with another / no category still show up.
+  for (const [id, n] of counts) {
+    if (!known.has(id)) list.push({ id, label: id === 'general' ? 'General' : id, description: '', count: n });
+  }
+  const total = list.reduce((sum, c) => sum + c.count, 0);
+  return [{ id: MIXED, label: 'Mixed', description: 'A bit of everything', count: total }, ...list];
+}
+
+function isValidCategory(id) {
+  return typeof id === 'string' && getCategories().some((c) => c.id === id);
+}
+function getCategoryLabel(id) {
+  const found = getCategories().find((c) => c.id === id);
+  return found ? found.label : 'Mixed';
+}
+/** How many questions of this category the room has NOT played yet. */
+function countFreshQuestions(category, excludeIds = []) {
+  const ids = excludeIds.filter(Number.isInteger);
+  const useCategory = category && category !== MIXED;
+  const sql = `SELECT COUNT(*) AS n FROM questions WHERE 1 = 1${useCategory ? ' AND category = ?' : ''}${
+    ids.length ? ` AND id NOT IN (${ids.map(() => '?').join(',')})` : ''
+  }`;
+  return db.prepare(sql).get(...(useCategory ? [category] : []), ...ids).n;
 }
 
 const saveGameTransaction = db.transaction((game) => {
@@ -371,6 +424,11 @@ module.exports = {
   saveGameResult,
   getRecentGames,
   countQuestions,
+  getCategories,
+  isValidCategory,
+  getCategoryLabel,
+  countFreshQuestions,
+  MIXED,
   close,
   // users / sessions / profiles
   upsertUser,

@@ -41,7 +41,7 @@ function envNumber(name, fallback) {
 
 const CONFIG = {
   port: envNumber('PORT', 3000), // hosting platforms set PORT for you
-  maxPlayers: envNumber('MAX_PLAYERS', 20), // players per room
+  maxPlayers: envNumber('MAX_PLAYERS', 50), // players per room
   minPlayersToStart: envNumber('MIN_PLAYERS', 1), // set to 2 to require company
   questionsPerGame: envNumber('QUESTIONS_PER_GAME', 10),
   questionMs: envNumber('QUESTION_SECONDS', 15) * 1000, // answer time per question
@@ -53,7 +53,7 @@ const CONFIG = {
   emptyRoomGraceMs: 30 * 1000, // a room with nobody connected is deleted after this
   roomIdleMs: 30 * 60 * 1000, // rooms with no activity for 30 min are closed
   maxRooms: envNumber('MAX_ROOMS', 500), // protects server memory
-  maxConnectionsPerIp: envNumber('MAX_CONNECTIONS_PER_IP', 40),
+  maxConnectionsPerIp: envNumber('MAX_CONNECTIONS_PER_IP', 120), // a whole class on one Wi-Fi shares one IP
   rateLimitEvents: 30, // max events per socket ...
   rateLimitWindowMs: 10 * 1000, // ... per 10 seconds
 
@@ -281,6 +281,8 @@ function publicState(room) {
     state: room.state,
     hostId: room.hostId,
     maxPlayers: CONFIG.maxPlayers,
+    category: room.category,
+    categoryLabel: room.categoryLabel,
     totalQuestions: room.questions.length || CONFIG.questionsPerGame,
     players: [...room.players.values()]
       .sort((a, b) => a.joinOrder - b.joinOrder)
@@ -333,9 +335,11 @@ function ensureHost(room) {
 }
 
 // ---- Creating and destroying rooms ------------------------------------------
-function createRoom(code) {
+function createRoom(code, category = database.MIXED) {
   const room = {
     code,
+    category, // which topic the quiz uses (the host can change it in the waiting room)
+    categoryLabel: database.getCategoryLabel(category),
     createdAt: Date.now(),
     lastActivity: Date.now(),
     state: 'lobby',
@@ -542,10 +546,10 @@ function membershipChanged(room) {
 function startGame(room) {
   // Avoid repeating questions this room has already played. Once most of the
   // bank has been used, start over so a long-running room never runs dry.
-  if (room.usedQuestionIds.size > database.countQuestions() - CONFIG.questionsPerGame) {
+  if (database.countFreshQuestions(room.category, [...room.usedQuestionIds]) < CONFIG.questionsPerGame) {
     room.usedQuestionIds.clear();
   }
-  const questions = database.getRandomQuestions(CONFIG.questionsPerGame, [...room.usedQuestionIds]);
+  const questions = database.getRandomQuestions(CONFIG.questionsPerGame, [...room.usedQuestionIds], room.category);
   for (const q of questions) room.usedQuestionIds.add(q.id);
   if (questions.length === 0) return 'There are no quiz questions in the database.';
 
@@ -752,11 +756,14 @@ io.on('connection', (socket) => {
     if (rooms.size >= CONFIG.maxRooms) {
       return fail(ack, 'The server is very busy right now. Please try again in a few minutes.', 'server_full');
     }
+    // The host picks the quiz topic. Anything unknown is refused (the server decides, not the browser).
+    const category = payload.category === undefined ? database.MIXED : payload.category;
+    if (!database.isValidCategory(category)) return fail(ack, 'Please choose a valid quiz category.', 'invalid_category');
     leaveCurrentRoom(socket, true); // a socket can only be in one room at a time
 
     const code = generateRoomCode();
     if (!code) return fail(ack, 'Could not create a room. Please try again.');
-    const room = createRoom(code);
+    const room = createRoom(code, category);
     const player = addPlayer(room, user, socket);
     room.hostId = player.id; // the creator is the host
 
@@ -840,6 +847,21 @@ io.on('connection', (socket) => {
   // ------------------------------------------------------------ leave room
   handle(socket, 'room:leave', (payload, ack) => {
     leaveCurrentRoom(socket, true);
+    return ok(ack);
+  });
+
+  // ------------------------------------------------ host changes the quiz category
+  handle(socket, 'room:setCategory', (payload, ack) => {
+    const ctx = getContext(socket);
+    if (!ctx) return fail(ack, 'You are not in a room.', 'not_in_room');
+    const { room, player } = ctx;
+    if (player.id !== room.hostId) return fail(ack, 'Only the host can change the category.', 'not_host');
+    if (room.state !== 'lobby') return fail(ack, 'The category can only be changed in the waiting room.', 'bad_state');
+    if (!database.isValidCategory(payload.category)) return fail(ack, 'Please choose a valid quiz category.', 'invalid_category');
+    room.category = payload.category;
+    room.categoryLabel = database.getCategoryLabel(payload.category);
+    room.lastActivity = Date.now();
+    broadcastRoom(room);
     return ok(ack);
   });
 

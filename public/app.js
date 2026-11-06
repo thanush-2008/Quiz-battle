@@ -32,6 +32,7 @@
   const CODE_PATTERN = /^[A-HJ-NP-Z2-9]{6}$/;
   const OPTION_LETTERS = ['A', 'B', 'C', 'D'];
   const MAX_NAME_LENGTH = 20;
+  const CATEGORY_KEY = 'quizbattle.category'; // the topic you picked last time
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -85,6 +86,12 @@
     statWins: $('stat-wins'),
     statBest: $('stat-best'),
     statCorrect: $('stat-correct'),
+    // quiz topics
+    categoryOptions: $('category-options'),
+    lobbyCategory: $('lobby-category'),
+    lobbyCategoryHost: $('lobby-category-host'),
+    lobbyCategorySelect: $('lobby-category-select'),
+    quizCategory: $('quiz-category'),
     // home
     homeAvatar: $('home-avatar'),
     homeName: $('home-name'),
@@ -307,7 +314,7 @@
     const name = getValidName();
     if (!name) return;
     setBusy(el.btnCreate, true);
-    const response = await request('room:create', { name });
+    const response = await request('room:create', { name, category: getSelectedCategory() });
     setBusy(el.btnCreate, false);
     if (!response.ok) return setHomeError(response.error);
     enterRoom(response);
@@ -368,6 +375,9 @@
     }
 
     const isHost = room.hostId === me;
+    el.lobbyCategory.textContent = room.categoryLabel || 'Mixed';
+    el.lobbyCategoryHost.hidden = !(isHost && room.state === 'lobby'); // only the host can change it
+    if (el.lobbyCategorySelect.value !== room.category) el.lobbyCategorySelect.value = room.category;
     const host = room.players.find((p) => p.id === room.hostId);
     el.btnStart.hidden = !isHost || room.state !== 'lobby';
     if (isHost) {
@@ -377,6 +387,62 @@
           : 'Everyone here? Press Start Quiz when you are ready.';
     } else {
       el.lobbyWait.textContent = host ? `Waiting for ${host.name} to start the quiz…` : 'Waiting for the host…';
+    }
+  }
+
+  // ---- Quiz topics ------------------------------------------------------------
+  /** Builds the topic chips on the home page and the host's drop-down in the waiting room. */
+  function renderCategories() {
+    const fromServer = state.config && Array.isArray(state.config.categories) ? state.config.categories : [];
+    const categories = fromServer.length ? fromServer : [{ id: 'mixed', label: 'Mixed', description: '', count: 0 }];
+    let saved = 'mixed';
+    try {
+      saved = localStorage.getItem(CATEGORY_KEY) || 'mixed';
+    } catch (err) {
+      /* ignore */
+    }
+    if (!categories.some((c) => c.id === saved)) saved = 'mixed';
+
+    el.categoryOptions.replaceChildren();
+    el.lobbyCategorySelect.replaceChildren();
+    for (const category of categories) {
+      const chip = h('label', 'cat-chip');
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'category';
+      input.value = category.id;
+      input.checked = category.id === saved;
+      input.addEventListener('change', () => {
+        try {
+          localStorage.setItem(CATEGORY_KEY, category.id);
+        } catch (err) {
+          /* ignore */
+        }
+      });
+      const body = h('span', 'cat-body');
+      body.append(h('span', 'cat-name', category.label));
+      if (category.count) body.append(h('span', 'cat-count', String(category.count)));
+      if (category.description) chip.title = category.description;
+      chip.append(input, body);
+      el.categoryOptions.appendChild(chip);
+
+      const option = document.createElement('option');
+      option.value = category.id;
+      option.textContent = category.count ? `${category.label} (${category.count} questions)` : category.label;
+      el.lobbyCategorySelect.appendChild(option);
+    }
+  }
+
+  function getSelectedCategory() {
+    const checked = el.categoryOptions.querySelector('input:checked');
+    return checked ? checked.value : 'mixed';
+  }
+
+  async function onChangeCategory() {
+    const response = await request('room:setCategory', { category: el.lobbyCategorySelect.value });
+    if (!response.ok) {
+      toast(response.error, 'error');
+      if (state.room) el.lobbyCategorySelect.value = state.room.category; // put the drop-down back
     }
   }
 
@@ -392,6 +458,8 @@
    * ======================================================================= */
   function renderQuestion(question) {
     el.qNumber.textContent = question.number;
+    el.quizCategory.textContent = state.room ? state.room.categoryLabel || '' : '';
+    el.quizCategory.hidden = !el.quizCategory.textContent;
     el.qTotal.textContent = question.total;
     el.questionText.textContent = question.text;
     el.options.replaceChildren();
@@ -863,10 +931,9 @@
       el.googleButton.replaceChildren();
       window.google.accounts.id.renderButton(el.googleButton, {
         theme: 'filled_black',
-        size: 'medium', // compact: Google's 32 px-high button (the logo scales with it)
+        size: 'small', // Google's smallest size (20 px high; 'medium' = 32 px, 'large' = 40 px)
         text: 'continue_with',
         shape: 'rectangular',
-        width: Math.min(260, Math.max(200, el.googleButton.clientWidth || 260)),
       });
       el.signinStatus.textContent = '';
     } catch (err) {
@@ -886,7 +953,9 @@
   }
 
   async function bootstrap() {
-    const me = await api('/api/me');
+    const [config, me] = await Promise.all([api('/api/config'), api('/api/me')]);
+    state.config = config.ok ? config.data : { googleClientId: null, devLogin: false, categories: [] };
+    renderCategories();
     if (me.ok && me.data.user) signedIn(me.data.user);
     else showSignin();
   }
@@ -1131,6 +1200,7 @@
   el.btnPhotoRemove.addEventListener('click', onRemovePhoto);
   el.btnSignOut.addEventListener('click', onSignOut);
   el.devLogin.addEventListener('submit', onDevLogin);
+  el.lobbyCategorySelect.addEventListener('change', onChangeCategory);
   el.loginForm.addEventListener('submit', onLogin);
   el.signupForm.addEventListener('submit', onSignup);
   el.tabLogin.addEventListener('click', () => setAuthTab('login'));

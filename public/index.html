@@ -129,7 +129,11 @@
         <div class="home-actions">
           <div class="action-block">
             <h2>Host a game</h2>
-            <p class="hint">Create a room and invite up to 19 friends with a 6-character code.</p>
+            <p class="hint">Pick a topic, create a room and invite up to 49 friends with a 6-character code.</p>
+            <fieldset class="category-picker">
+              <legend>Quiz topic</legend>
+              <div id="category-options" class="category-options" role="radiogroup" aria-label="Quiz topic"></div>
+            </fieldset>
             <button id="btn-create" class="btn btn-primary btn-block" type="button">Create Room</button>
           </div>
 
@@ -152,13 +156,13 @@
         <ol class="steps">
           <li class="step card">
             <span class="step-num" aria-hidden="true">1</span>
-            <h3>Pick a name</h3>
-            <p>Type the name your friends will see on the leaderboard.</p>
+            <h3>Sign in</h3>
+            <p>Use Google or your email. Your name and photo show on the leaderboard.</p>
           </li>
           <li class="step card">
             <span class="step-num" aria-hidden="true">2</span>
             <h3>Create or join</h3>
-            <p>Hosts create a room and share the code. Everyone else enters it to join the lobby.</p>
+            <p>Hosts pick a topic, create a room and share the code. Up to 50 players can join.</p>
           </li>
           <li class="step card">
             <span class="step-num" aria-hidden="true">3</span>
@@ -188,12 +192,21 @@
             <button id="btn-copy-link" class="btn btn-ghost" type="button">Copy invite link</button>
           </div>
           <p class="hint">Friends can also open the invite link on their phone to join instantly.</p>
+
+          <div class="topic-box">
+            <p class="label">Quiz topic</p>
+            <p id="lobby-category" class="topic-name"></p>
+            <div id="lobby-category-host" class="field" hidden>
+              <label for="lobby-category-select">Change topic</label>
+              <select id="lobby-category-select"></select>
+            </div>
+          </div>
         </div>
 
         <div class="card players-card">
           <div class="card-head">
             <h2>Players</h2>
-            <span id="player-count" class="pill" aria-label="Number of players">0 / 20</span>
+            <span id="player-count" class="pill" aria-label="Number of players">0 / 50</span>
           </div>
           <ul id="lobby-players" class="player-list" aria-live="polite"></ul>
         </div>
@@ -212,6 +225,7 @@
         <div class="card question-card">
           <div class="question-meta">
             <h1 id="quiz-progress" class="progress-label" tabindex="-1">Question <span id="q-number">1</span> of <span id="q-total">5</span></h1>
+            <span id="quiz-category" class="pill pill-topic"></span>
             <span id="answered-count" class="pill" aria-live="polite">0 / 0 answered</span>
           </div>
 

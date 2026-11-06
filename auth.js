@@ -289,7 +289,11 @@ function createAuth(hooks) {
   // ---- public config (the Google client id is NOT a secret) ----------------
   router.get('/api/config', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ googleClientId: GOOGLE_CLIENT_ID || null, devLogin: DEV_LOGIN });
+    res.json({
+      googleClientId: GOOGLE_CLIENT_ID || null,
+      devLogin: DEV_LOGIN,
+      categories: database.getCategories(), // quiz topics the host can choose from
+    });
   });
 
   // ---- sign in with Google ---------------------------------------------------

@@ -15,7 +15,7 @@ QuizBattle/
 ├── server.js           ← Express + Socket.IO server, all game rules
 ├── database.js         ← SQLite: tables, seeding, random picking, users, sessions, results
 ├── auth.js             ← Google sign-in, sessions, profile + photo routes
-├── questions-bank.js   ← 134 built-in questions (edit this to add more)
+├── questions-bank.js   ← 219 built-in questions in 7 categories (edit to add more)
 ├── requirements.md     ← this guide
 ├── .env.example        ← list of settings (copy to .env for local Google sign-in)
 ├── .gitignore
@@ -71,8 +71,8 @@ npm start       # starts the server
 You should see:
 
 ```
-[db] Added 134 new questions to .../data/quiz.db
-QuizBattle is running (134 questions in .../data/quiz.db)
+[db] Added 219 new questions to .../data/quiz.db
+QuizBattle is running (219 questions in .../data/quiz.db)
   Local:    http://localhost:3000
   Network:  http://192.168.x.x:3000   (phones/computers on the same Wi-Fi)
 ```
@@ -221,23 +221,34 @@ Only `GOOGLE_CLIENT_ID` is required (for sign-in); everything else is optional.
 | `NODE_ENV` | – | Set to `production` when deployed |
 | `TRUST_PROXY` | `false` | `true` behind a hosting proxy so per-IP limits see real visitor IPs |
 | `DB_PATH` | `./data/quiz.db` | SQLite file location |
-| `MAX_PLAYERS` | `20` | Players per room |
+| `MAX_PLAYERS` | `50` | Players per room |
 | `MIN_PLAYERS` | `1` | Players needed to start (set `2` to require company) |
 | `QUESTIONS_PER_GAME` | `10` | Questions drawn from the database per game |
 | `QUESTION_SECONDS` | `15` | Time to answer |
 | `REVEAL_SECONDS` | `5` | How long each result is shown |
 | `MAX_ROOMS` | `500` | Cap on simultaneous rooms |
-| `MAX_CONNECTIONS_PER_IP` | `40` | Cap on connections from one IP |
+| `MAX_CONNECTIONS_PER_IP` | `120` | Cap on connections from one IP |
 | `CORS_ORIGIN` | – | Only if the frontend is on a different domain |
 
 Locally you can set one inline, e.g. macOS/Linux `QUESTION_SECONDS=30 npm start`,
 Windows PowerShell `$env:QUESTION_SECONDS=30; npm start`.
 
+### Quiz topics (categories)
+When creating a room the host picks a topic: **Technology, Geography, Science & Nature, History, Sports,
+Entertainment, Society & Culture** — or **Mixed** (everything). The host can change the topic again in the
+waiting room (e.g. before pressing *Play Again*). Each game draws `QUESTIONS_PER_GAME` random questions from that
+topic, and a room never repeats a question until the topic is used up.
+
 ### Adding your own questions
-**Easiest way:** open `questions-bank.js`, add a line in the same format
-(`['Question?', 'CORRECT answer', 'wrong 1', 'wrong 2', 'wrong 3']`) and restart the server.
-New questions are added to the database automatically and nothing is duplicated.
-The correct answer is written first in the file, but the four answers are shuffled every game.
+Questions live in `questions-bank.js`, grouped by category. To add one, put a line inside the category you want:
+`['Question?', 'CORRECT answer', 'wrong 1', 'wrong 2', 'wrong 3'],` and restart the server.
+To add a whole **new category**, add `{ id: 'music', label: 'Music', description: '...' }` to `CATEGORIES`
+and a `music: [ ... ]` list to `QUESTIONS` (same lowercase id).
+Questions you insert by hand with SQL get the category `general` (they appear in *Mixed* only) unless you set one:
+`UPDATE questions SET category = 'technology' WHERE id = 123;`
+
+New questions are added to the database automatically and nothing is duplicated. The correct answer is
+written first in the file, but the four answers are shuffled every game.
 
 **Or use a SQLite tool:** install any SQLite tool (e.g. the "SQLite Viewer" VS Code extension or DB Browser for SQLite), open `data/quiz.db`
 and insert rows. `correct_index` is 0–3 and points at `option_a`…`option_d`:
@@ -261,7 +272,7 @@ Finished games are stored in the `games` and `game_results` tables.
 - **Correct answers** are never sent to browsers until the question has ended.
 - **Ties:** players with equal scores share the same rank (1, 1, 3 …) and all tied for first get the 🏆.
   Within a tie, players are listed in the order they joined. If nobody scores, there is no winner.
-- **Rooms:** max 20 players; nobody can join after the quiz starts; codes are 6 characters from a
+- **Rooms:** max 50 players; nobody can join after the quiz starts; codes are 6 characters from a
   look-alike-free alphabet (no `0/O/1/I`) generated with a cryptographically secure random source.
 - **Disconnects:** in the waiting room a dropped player keeps their seat for 15 s; mid-game they stay on
   the leaderboard marked *Offline* and can re-join (same tab) with a private token. If the host leaves,
